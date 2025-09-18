@@ -6,11 +6,52 @@ using DrawablePtr = std::unique_ptr<sf::Drawable>;
 
 class Scene;
 
+
+class Component
+{
+public:
+    virtual ~Component() = default;
+
+    // Optional: update per-frame
+    virtual void update(float dt) {}
+
+    // Draw this component with the given parent transform
+    virtual void draw(sf::RenderWindow& window, const sf::Transform& parentTransform) const = 0;
+};
+
+class RectangleShapeComponent final : public Component
+{
+public:
+    explicit RectangleShapeComponent(std::unique_ptr<sf::RectangleShape> shape) : shape_(std::move(shape)) {}
+    ~RectangleShapeComponent() override = default;
+
+    [[nodiscard]] sf::RectangleShape* getShape() const { return shape_.get(); }
+    void setShape(std::unique_ptr<sf::RectangleShape> shape) { shape_ = std::move(shape); }
+
+    void draw(sf::RenderWindow& window, const sf::Transform& parentTransform) const override
+    {
+        if (!shape_)
+        {
+            return;
+        }
+
+        sf::RenderStates states;
+        states.transform = parentTransform * shape_->getTransform();
+        window.draw(*shape_, states);
+    }
+
+private:
+    std::unique_ptr<sf::RectangleShape> shape_;
+};
+
+
 class SceneNode
 {
 public:
     explicit SceneNode(std::string name) : name_(std::move(name)) {};
     virtual ~SceneNode() = default;
+
+    virtual void init() {};
 
     // Name Management
     [[nodiscard]] const std::string& getName() const { return name_; }
@@ -51,15 +92,19 @@ public:
     // There is a risk that we set the parent but don't put the node in the parent's children
     void setParent(SceneNode* parent) { parent_ = parent; }
 
-    // Drawable
-    void setDrawable(DrawablePtr drawable) { drawable_ = std::move(drawable); }
-
     // Access transform for external manipulation
     sf::Transformable& getTransform() { return transform_; }
+
+    void addComponent(std::unique_ptr<Component> component) { components_.emplace_back(std::move(component)); }
 
     // Game Loop
     virtual void update(const float dt)
     {
+        for (const auto& component : components_)
+        {
+            component->update(dt);
+        }
+
         for (const auto& child : children_)
         {
             child->update(dt);
@@ -70,11 +115,9 @@ public:
     {
         const sf::Transform combinedTransform = parentTransform * transform_.getTransform();
 
-        if (drawable_)
+        for (const auto& component : components_)
         {
-            sf::RenderStates states;
-            states.transform = combinedTransform;
-            window.draw(*drawable_, states);
+            component->draw(window, combinedTransform);
         }
 
         for (const auto& child : children_)
@@ -93,10 +136,10 @@ private:
 
     std::vector<std::unique_ptr<SceneNode>> children_{};
 
-    DrawablePtr drawable_{};
-
     // Each node has its own local transform
     sf::Transformable transform_;
+
+    std::vector<std::unique_ptr<Component>> components_{};
 };
 
 class Scene
@@ -110,11 +153,11 @@ public:
 
     // Node Management, we call them node; they are entities, why calling them nodes you'll ask me?
     [[nodiscard]] SceneNode& getNode(const EntityID id) const { return *registry_.at(id); }
-    [[nodiscard]] SceneNode& createNode(const std::string& name, SceneNode* parent = nullptr)
+    [[nodiscard]] SceneNode& addNode(std::unique_ptr<SceneNode> node, SceneNode* parent = nullptr)
     {
-        auto node = std::make_unique<SceneNode>(name);
         node->setId(nextId_++);
         node->setScene(this);
+        node->init();
 
         // If no parent is specified, we assume it's a child of the root node
         if (!parent)
@@ -128,6 +171,7 @@ public:
         registry_[raw->getId()] = raw;
         return *raw;
     }
+
     void removeNode(const EntityID id)
     {
         const auto node = registry_.find(id);
@@ -157,6 +201,31 @@ private:
     sf::Transform transform_{};
 };
 
+class Paddle final : public SceneNode
+{
+public:
+    Paddle() : SceneNode("paddle") {}
+
+    void init() override
+    {
+        auto rectComponent = std::make_unique<RectangleShapeComponent>(std::make_unique<sf::RectangleShape>());
+
+        // Create a unique pointer that cannot be shared
+        const auto shape = rectComponent->getShape();
+        shape->setSize({50.f, 50.f});
+        shape->setFillColor(sf::Color::Red);
+
+        addComponent(std::move(rectComponent));
+    }
+
+    void update(const float dt) override
+    {
+        auto transform = this->getTransform();
+        transform.setRotation(sf::degrees(transform.getRotation().asDegrees() + 10.f * dt));
+        this->SceneNode::update(dt);
+    }
+};
+
 int main()
 {
     auto window = sf::RenderWindow(sf::VideoMode({640u, 480u}), "CMake SFML Project");
@@ -164,29 +233,8 @@ int main()
 
     Scene scene;
 
-    auto& rectNode = scene.createNode("rectangle");
-    rectNode.getTransform().setPosition({640u / 2.f, 480u / 2.f});
-    rectNode.getTransform().setOrigin({25.f, 25.f});
-    rectNode.getTransform().setRotation(sf::degrees(45.f));
-
-    // Create a unique pointer that cannot be shared
-    auto shape = std::make_unique<sf::RectangleShape>();
-    shape->setSize({50.f, 50.f});
-    shape->setFillColor(sf::Color::Red);
-    shape->setPosition({0.f, 0.f});
-
-    // Move the unique pointer to the node
-    rectNode.setDrawable(std::move(shape));
-
-    auto& triangleNode = scene.createNode("triangle", &rectNode);
-    triangleNode.getTransform().setPosition({25.f, 25.f});
-    triangleNode.getTransform().setOrigin({10.f, 10.f});
-
-    auto triangle = std::make_unique<sf::CircleShape>(10.f, 3);
-    triangle->setFillColor(sf::Color::Blue);
-    triangle->setPosition({0.f, 0.f});
-
-    triangleNode.setDrawable(std::move(triangle));
+    auto& paddleNode = scene.addNode(std::make_unique<Paddle>());
+    paddleNode.getTransform().setPosition({100.f, 100.f});
 
     // Game Loop
     sf::Clock clock;

@@ -54,6 +54,9 @@ public:
     // Drawable
     void setDrawable(DrawablePtr drawable) { drawable_ = std::move(drawable); }
 
+    // Access transform for external manipulation
+    sf::Transformable& getTransform() { return transform_; }
+
     // Game Loop
     virtual void update(const float dt)
     {
@@ -63,17 +66,20 @@ public:
         }
     }
 
-    void draw(sf::RenderWindow& window) const
+    void draw(sf::RenderWindow& window, const sf::Transform& parentTransform) const
     {
-        // TODO: we want to add a transformable so we can inherit world transformation
+        const sf::Transform combinedTransform = parentTransform * transform_.getTransform();
+
         if (drawable_)
         {
-            window.draw(*drawable_);
+            sf::RenderStates states;
+            states.transform = combinedTransform;
+            window.draw(*drawable_, states);
         }
 
         for (const auto& child : children_)
         {
-            child->draw(window);
+            child->draw(window, combinedTransform);
         }
     }
 
@@ -88,6 +94,9 @@ private:
     std::vector<std::unique_ptr<SceneNode>> children_{};
 
     DrawablePtr drawable_{};
+
+    // Each node has its own local transform
+    sf::Transformable transform_;
 };
 
 class Scene
@@ -128,19 +137,24 @@ public:
         registry_.erase(id);
     }
 
+    [[nodiscard]] sf::Transform getTransform() const { return transform_; }
+
     // The game loop calls will start updating and drawing from the root node
     void update(const float dt) { root_->update(dt); }
-    void draw(sf::RenderWindow& window) const { root_->draw(window); }
+    void draw(sf::RenderWindow& window) const { root_->draw(window, getTransform()); }
 
 private:
     // The scene owns the root node
     std::unique_ptr<SceneNode> root_{std::make_unique<SceneNode>("Root")};
 
-    // Map of pointers to SceneNode, this creates a risk of dangling pointers if a node is destroyed but not removed from the registry
+    // Map of pointers to SceneNode, this creates a risk of dangling pointers if a node is destroyed but not removed
+    // from the registry
     std::unordered_map<EntityID, SceneNode*> registry_{};
 
     // The next ID to ensure the registry use unique identifiers
     EntityID nextId_{1};
+
+    sf::Transform transform_{};
 };
 
 int main()
@@ -149,24 +163,30 @@ int main()
     window.setFramerateLimit(144);
 
     Scene scene;
+
     auto& rectNode = scene.createNode("rectangle");
+    rectNode.getTransform().setPosition({640u / 2.f, 480u / 2.f});
+    rectNode.getTransform().setOrigin({25.f, 25.f});
+    rectNode.getTransform().setRotation(sf::degrees(45.f));
 
     // Create a unique pointer that cannot be shared
     auto shape = std::make_unique<sf::RectangleShape>();
     shape->setSize({50.f, 50.f});
     shape->setFillColor(sf::Color::Red);
-    shape->setPosition({20.f, 20.f});
+    shape->setPosition({0.f, 0.f});
 
     // Move the unique pointer to the node
     rectNode.setDrawable(std::move(shape));
 
-    auto& circleNode = scene.createNode("circle", &rectNode);
+    auto& triangleNode = scene.createNode("triangle", &rectNode);
+    triangleNode.getTransform().setPosition({25.f, 25.f});
+    triangleNode.getTransform().setOrigin({10.f, 10.f});
 
-    auto circle = std::make_unique<sf::CircleShape>(10.f);
-    circle->setFillColor(sf::Color::Blue);
-    circle->setPosition({100.f, 100.f});
+    auto triangle = std::make_unique<sf::CircleShape>(10.f, 3);
+    triangle->setFillColor(sf::Color::Blue);
+    triangle->setPosition({0.f, 0.f});
 
-    circleNode.setDrawable(std::move(circle));
+    triangleNode.setDrawable(std::move(triangle));
 
     // Game Loop
     sf::Clock clock;
@@ -177,6 +197,13 @@ int main()
             if (event->is<sf::Event::Closed>())
             {
                 window.close();
+            }
+            else if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>())
+            {
+                if (keyPressed->code == sf::Keyboard::Key::Escape)
+                {
+                    window.close();
+                }
             }
         }
 
